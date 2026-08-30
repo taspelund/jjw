@@ -3,7 +3,7 @@ name = "jjw"
 version = "0.1.0"
 edition = "2024"
 description = "A local jj workspace manager with GitHub PR integration"
-license = "MIT"
+license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.104"
