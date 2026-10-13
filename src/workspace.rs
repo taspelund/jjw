@@ -547,12 +547,15 @@ impl<'a> WorkspaceManager<'a> {
                 warnings.push(error.into());
             }
         }
-        if let Err(error) = self.forget(&workspace.name) {
+        if let Err(error) = self
+            .remove_missing_git_worktree(&workspace.path)
+            .and_then(|()| self.forget(&workspace.name))
+        {
             if !directory_deleted {
                 return Err(error);
             }
             warnings.push(error.context(format!(
-                "deleted {}, but could not clear workspace `{}` from jj; \
+                "deleted {}, but could not clear workspace `{}` registrations; \
                  rerun removal to clear the stale registration",
                 workspace.path.display(),
                 workspace.name
@@ -677,6 +680,7 @@ impl<'a> WorkspaceManager<'a> {
             format!("could not create {}", parent.display())
         })?;
 
+        self.remove_missing_git_worktree(path)?;
         let mut command = Command::new("jj");
         command
             .arg("-R")
@@ -714,7 +718,61 @@ impl<'a> WorkspaceManager<'a> {
                 format!("could not delete {}", path.display())
             })?;
         }
+        self.remove_missing_git_worktree(path)?;
         self.forget(name)
+    }
+
+    fn remove_missing_git_worktree(&self, path: &Path) -> Result<()> {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).context("could not inspect worktree");
+            }
+            Ok(_) => bail!(
+                "refusing to clear Git worktree registration for existing path {}",
+                path.display()
+            ),
+        }
+        let git_root = self.repository.git_root(self.runner)?;
+        let worktrees = checked_bytes_output(
+            self.runner,
+            Command::new("git").arg("--git-dir").arg(&git_root).args([
+                "worktree",
+                "list",
+                "--porcelain",
+                "-z",
+            ]),
+        )?;
+        for field in worktrees.split(|byte| *byte == 0) {
+            let Some(bytes) = field.strip_prefix(b"worktree ") else {
+                continue;
+            };
+            let registered = PathBuf::from(os_string_from_bytes(
+                bytes.to_vec(),
+                "Git worktree path",
+            )?);
+            // The leaf no longer exists, but parents can still resolve aliases
+            // such as /var and /private/var on macOS.
+            let matches = registered == path
+                || (registered.file_name() == path.file_name()
+                    && registered
+                        .parent()
+                        .zip(path.parent())
+                        .is_some_and(|(left, right)| same_path(left, right)));
+            if matches {
+                // Never prune the whole repository: other workspaces may be
+                // temporarily absent while a batch removal is quarantined.
+                return checked_run(
+                    self.runner,
+                    Command::new("git")
+                        .arg("--git-dir")
+                        .arg(&git_root)
+                        .args(["worktree", "remove", "--"])
+                        .arg(&registered),
+                );
+            }
+        }
+        Ok(())
     }
 
     fn forget(&self, name: &WorkspaceName) -> Result<()> {
@@ -1442,10 +1500,9 @@ mod tests {
                 .get_args()
                 .map(|argument| argument.to_string_lossy())
                 .collect::<Vec<_>>();
-            if arguments
-                .windows(2)
-                .any(|pair| pair == ["workspace", "list"])
-            {
+            if arguments.windows(2).any(|pair| {
+                pair == ["workspace", "list"] || pair == ["worktree", "list"]
+            }) {
                 return Ok(success(Vec::new()));
             }
             if arguments
@@ -1482,10 +1539,9 @@ mod tests {
                 .get_args()
                 .map(|argument| argument.to_string_lossy())
                 .collect::<Vec<_>>();
-            if arguments
-                .windows(2)
-                .any(|pair| pair == ["workspace", "list"])
-            {
+            if arguments.windows(2).any(|pair| {
+                pair == ["workspace", "list"] || pair == ["worktree", "list"]
+            }) {
                 return Ok(success(Vec::new()));
             }
             if arguments
@@ -2164,7 +2220,11 @@ mod tests {
         let runner = QueueRunner::new([
             success(Vec::new()),
             success(Vec::new()),
+            success(b"/tmp/test.git\n".to_vec()),
+            success(Vec::new()),
             failure("repository is locked"),
+            success(b"/tmp/test.git\n".to_vec()),
+            success(Vec::new()),
             success(Vec::new()),
             success(Vec::new()),
         ]);
@@ -2317,6 +2377,8 @@ mod tests {
             success(Vec::new()),
             success(Vec::new()),
             success(Vec::new()),
+            success(Vec::new()),
+            success(b"/tmp/test.git\n".to_vec()),
             success(Vec::new()),
             success(Vec::new()),
             success(Vec::new()),

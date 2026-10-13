@@ -92,6 +92,72 @@ fn generic_create_needs_no_git_remote() {
 }
 
 #[test]
+fn generic_create_recovers_stale_worktrees_without_pruning_others() {
+    let temp = TempDir::new();
+    let home = temp.0.join("home");
+    let repository = temp.0.join("repository");
+    fs::create_dir(&home).expect("create isolated home");
+    run(Command::new("jj")
+        .args(["git", "init", "--colocate"])
+        .arg(&repository));
+    let mut paths = Vec::new();
+    for name in ["ws-1", "ws-2"] {
+        let path = PathBuf::from(output_string(run(Command::new(env!(
+            "CARGO_BIN_EXE_jjw"
+        ))
+        .args(["create", name])
+        .current_dir(&repository)
+        .env("HOME", &home))));
+        assert!(path.join(".git").is_file());
+        paths.push(fs::canonicalize(path).expect("canonical workspace path"));
+    }
+    for (name, path) in ["ws-1", "ws-2"].into_iter().zip(&paths) {
+        fs::remove_dir_all(path).expect("simulate old jjw removal");
+        run(Command::new("jj").arg("-R").arg(&repository).args([
+            "workspace",
+            "forget",
+            name,
+        ]));
+    }
+    run(Command::new("git")
+        .arg("-C")
+        .arg(&repository)
+        .args(["worktree", "lock"])
+        .arg(&paths[0]));
+    let output = Command::new(env!("CARGO_BIN_EXE_jjw"))
+        .arg("create")
+        .current_dir(&repository)
+        .env("HOME", &home)
+        .output()
+        .expect("attempt reuse of locked worktree");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("locked"));
+    assert!(!paths[0].exists());
+
+    run(Command::new("git")
+        .arg("-C")
+        .arg(&repository)
+        .args(["worktree", "unlock"])
+        .arg(&paths[0]));
+    let recreated = output_string(run(Command::new(env!("CARGO_BIN_EXE_jjw"))
+        .arg("create")
+        .current_dir(&repository)
+        .env("HOME", &home)));
+    assert_eq!(
+        fs::canonicalize(recreated).expect("recreated path"),
+        paths[0]
+    );
+    assert!(paths[0].join(".git").is_file());
+
+    let worktrees = output_string(run(Command::new("git")
+        .arg("-C")
+        .arg(&repository)
+        .args(["worktree", "list", "--porcelain"])));
+    assert!(worktrees.contains(&format!("worktree {}\n", paths[1].display())));
+    assert!(worktrees.contains("prunable"));
+}
+
+#[test]
 fn generic_create_supports_a_leading_hyphen_name() {
     let temp = TempDir::new();
     let home = temp.0.join("home");
@@ -286,6 +352,13 @@ fn cleanup_can_remove_the_workspace_it_is_running_from() {
             .arg(&repository)
             .args(["workspace", "list", "-T", "name ++ \"\\n\""])));
         assert!(!workspaces.lines().any(|name| name == "pr-7"));
+
+        // Reusing a removed workspace must not collide with a stale Git worktree.
+        run(Command::new("jj")
+            .arg("-R")
+            .arg(&repository)
+            .args(["workspace", "add", "--name", "pr-7", "--colocate"])
+            .arg(&workspace));
     }
 }
 
