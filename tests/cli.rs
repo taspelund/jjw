@@ -237,39 +237,56 @@ fn pr_summary_requires_a_pr_number_outside_a_pr_workspace() {
 
 #[test]
 fn cleanup_can_remove_the_workspace_it_is_running_from() {
-    let temp = TempDir::new();
-    let home = temp.0.join("home");
-    let repository = temp.0.join("repository");
-    fs::create_dir(&home).expect("create isolated home");
-    initialize_non_colocated_repository(&repository);
-    add_github_origin(&repository);
+    for git_metadata in ["none", "file", "directory"] {
+        let temp = TempDir::new();
+        let home = temp.0.join("home");
+        let repository = temp.0.join("repository");
+        fs::create_dir(&home).expect("create isolated home");
+        initialize_non_colocated_repository(&repository);
+        add_github_origin(&repository);
 
-    let workspace = home.join("git/workspaces/owner/repository/pr-7");
-    fs::create_dir_all(workspace.parent().expect("workspace parent"))
-        .expect("create workspace parent");
-    run(Command::new("jj")
-        .arg("-R")
-        .arg(&repository)
-        .args(["workspace", "add", "--name", "pr-7"])
-        .arg(&workspace));
+        let workspace = home.join("git/workspaces/owner/repository/pr-7");
+        fs::create_dir_all(workspace.parent().expect("workspace parent"))
+            .expect("create workspace parent");
+        run(Command::new("jj")
+            .arg("-R")
+            .arg(&repository)
+            .args(["workspace", "add", "--name", "pr-7"])
+            .arg(if git_metadata == "file" {
+                "--colocate"
+            } else {
+                "--no-colocate"
+            })
+            .arg(&workspace));
+        if git_metadata == "directory" {
+            run(Command::new("git").arg("init").arg(&workspace));
+        }
+        fs::write(workspace.join(".jj/.gitignore"), "*\n")
+            .expect("write jj metadata ignore file");
+        match git_metadata {
+            "file" => assert!(workspace.join(".git").is_file()),
+            "directory" => assert!(workspace.join(".git").is_dir()),
+            _ => assert!(!workspace.join(".git").exists()),
+        }
 
-    let output = run(Command::new(env!("CARGO_BIN_EXE_jjw"))
-        .args(["pr", "cleanup", "7", "--force", "--yes"])
-        .current_dir(&workspace)
-        .env("HOME", &home));
+        let output = run(Command::new(env!("CARGO_BIN_EXE_jjw"))
+            .args(["pr", "cleanup", "7", "--yes"])
+            .current_dir(&workspace)
+            .env("HOME", &home));
 
-    assert_eq!(
-        output_string(output),
-        fs::canonicalize(&repository)
-            .expect("canonical repository path")
-            .to_string_lossy()
-    );
-    assert!(!workspace.exists());
-    let workspaces = output_string(run(Command::new("jj")
-        .arg("-R")
-        .arg(&repository)
-        .args(["workspace", "list", "-T", "name ++ \"\\n\""])));
-    assert!(!workspaces.lines().any(|name| name == "pr-7"));
+        assert_eq!(
+            output_string(output),
+            fs::canonicalize(&repository)
+                .expect("canonical repository path")
+                .to_string_lossy()
+        );
+        assert!(!workspace.exists());
+        let workspaces = output_string(run(Command::new("jj")
+            .arg("-R")
+            .arg(&repository)
+            .args(["workspace", "list", "-T", "name ++ \"\\n\""])));
+        assert!(!workspaces.lines().any(|name| name == "pr-7"));
+    }
 }
 
 #[test]

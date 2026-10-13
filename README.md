@@ -52,7 +52,10 @@ Run `jjw --help` for the complete command list. `ls` includes each workspace's
 path. `create` and `pr checkout` print only the selected path to stdout. `rm`
 and `pr cleanup` print the default root only when they remove the current
 workspace. Removal refuses to delete ignored or otherwise untracked files
-unless `--force` is passed. A subcommand is required; bare `jjw` prints usage.
+unless `--force` is passed. Workspace-root `.git` metadata and known jj
+administrative paths (`.jj/repo`, `.jj/working_copy`, `.jj/.gitignore`) do not
+require `--force`; other data under `.jj` and nested repositories still do.
+A subcommand is required; bare `jjw` prints usage.
 Diagnostics go to stderr.
 
 `pr cleanup` confirms before deletion; pass `--yes` for non-interactive use.

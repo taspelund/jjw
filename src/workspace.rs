@@ -968,7 +968,11 @@ impl<'a> WorkspaceManager<'a> {
                 let relative = path
                     .strip_prefix(workspace)
                     .context("workspace entry escaped its root")?;
-                if relative == Path::new(".jj/repo")
+                // These root-relative paths are administrative metadata, not
+                // user files. Do not exempt nested repositories or all of .jj.
+                if relative == Path::new(".git")
+                    || relative == Path::new(".jj/.gitignore")
+                    || relative == Path::new(".jj/repo")
                     || relative.starts_with(".jj/working_copy")
                 {
                     continue;
@@ -2050,24 +2054,43 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_data_under_jj_directory_prevents_deletion() {
-        let temp = TempDir::new("unexpected-jj-data");
-        let path = temp.0.join("workspace");
-        fs::create_dir_all(path.join(".jj/working_copy"))
-            .expect("create jj administrative directory");
-        fs::write(path.join(".jj/repo"), "repository pointer")
-            .expect("create jj repository pointer");
-        fs::write(path.join(".jj/user-data"), "keep me")
-            .expect("create unexpected user data");
-        let runner = QueueRunner::new([success(Vec::new())]);
-        let repository = repository(&temp.0);
-        let manager = WorkspaceManager::new(&repository, &runner);
+    fn unexpected_data_near_metadata_prevents_deletion() {
+        for relative in [".jj/user-data", "nested/.git/config"] {
+            let temp = TempDir::new("unexpected-jj-data");
+            let path = temp.0.join("workspace");
+            fs::create_dir_all(path.join(".jj/working_copy"))
+                .expect("create jj administrative directory");
+            fs::write(path.join(".jj/repo"), "repository pointer")
+                .expect("create jj repository pointer");
+            fs::write(path.join(".jj/.gitignore"), "*\n")
+                .expect("create jj ignore file");
+            let user_data = path.join(relative);
+            fs::create_dir_all(user_data.parent().expect("data parent"))
+                .expect("create user data directory");
+            fs::write(&user_data, "keep me")
+                .expect("create unexpected user data");
+            let runner = QueueRunner::new([
+                success(Vec::new()),
+                success(Vec::new()),
+                success(Vec::new()),
+            ]);
+            let repository = repository(&temp.0);
+            let manager = WorkspaceManager::new(&repository, &runner);
+            let workspace = Workspace {
+                name: WorkspaceName::generic("feature").expect("valid name"),
+                path,
+            };
 
-        let untracked = manager
-            .untracked_files(&path)
-            .expect("inspect workspace metadata");
+            let error = manager
+                .prepare_removal(&workspace, false)
+                .expect_err("user data must prevent removal");
 
-        assert_eq!(untracked, vec![PathBuf::from(".jj/user-data")]);
+            assert!(error.to_string().contains(relative));
+            assert_eq!(
+                fs::read_to_string(user_data).expect("data remains"),
+                "keep me"
+            );
+        }
     }
 
     #[test]
