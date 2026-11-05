@@ -27,8 +27,12 @@ pub enum Commands {
     },
     /// List all workspaces.
     Ls,
-    /// Remove workspaces interactively, returning to the root when needed.
+    /// Remove workspaces, returning to the root when needed.
     Rm {
+        /// Workspaces to remove without prompting; omit to pick and confirm
+        /// interactively.
+        #[arg(value_name = "NAME")]
+        names: Vec<String>,
         /// Delete files that jj does not track.
         #[arg(long)]
         force: bool,
@@ -84,14 +88,12 @@ pub enum PrCommands {
     },
     /// Remove a PR workspace, printing the root when removing the current one.
     Cleanup {
-        /// GitHub PR number; omit inside its exact pr-N workspace.
+        /// GitHub PR number to remove without prompting; omit inside its
+        /// exact pr-N workspace to confirm interactively.
         #[arg(value_name = "PR_NUMBER")]
         number: Option<u64>,
         /// Delete files that jj does not track.
         #[arg(long)]
         force: bool,
-        /// Skip the deletion confirmation prompt.
-        #[arg(long)]
-        yes: bool,
     },
 }

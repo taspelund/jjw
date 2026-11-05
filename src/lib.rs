@@ -30,7 +30,7 @@ enum PrCommand {
     Summary,
     Checks,
     Open,
-    Cleanup { force: bool, yes: bool },
+    Cleanup { force: bool },
 }
 
 impl PrCommand {
@@ -76,8 +76,8 @@ fn run_with(runner: &dyn CommandRunner, cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Ls => list_workspaces(&manager),
-        Commands::Rm { force } => {
-            remove_workspaces(runner, &jj, &manager, force)
+        Commands::Rm { names, force } => {
+            remove_workspaces(runner, &jj, &manager, &names, force)
         }
         Commands::Pr { command } => match command {
             PrCommands::Checkout {
@@ -104,11 +104,11 @@ fn run_with(runner: &dyn CommandRunner, cli: Cli) -> Result<()> {
             PrCommands::Open { number } => {
                 pr_command(runner, &jj, &manager, PrCommand::Open, number)
             }
-            PrCommands::Cleanup { number, force, yes } => pr_command(
+            PrCommands::Cleanup { number, force } => pr_command(
                 runner,
                 &jj,
                 &manager,
-                PrCommand::Cleanup { force, yes },
+                PrCommand::Cleanup { force },
                 number,
             ),
         },
@@ -175,6 +175,7 @@ fn remove_workspaces(
     runner: &dyn CommandRunner,
     jj: &JjRepository,
     manager: &WorkspaceManager<'_>,
+    names: &[String],
     force: bool,
 ) -> Result<()> {
     let workspaces = manager
@@ -185,21 +186,40 @@ fn remove_workspaces(
                 && !workspace.path.as_os_str().is_empty()
         })
         .collect::<Vec<_>>();
-    if workspaces.is_empty() {
-        eprintln!("No non-default workspaces found.");
-        return Ok(());
-    }
-    let labels = workspaces
-        .iter()
-        .map(|workspace| {
-            format!("{}\t{}", workspace.name, format_path(&workspace.path))
-        })
-        .collect::<Vec<_>>();
-    let mut selected = pick_indices(
-        runner,
-        &labels,
-        "Remove workspaces (tab to toggle, enter to confirm)",
-    )?;
+    let mut selected = if names.is_empty() {
+        if workspaces.is_empty() {
+            eprintln!("No non-default workspaces found.");
+            return Ok(());
+        }
+        let labels = workspaces
+            .iter()
+            .map(|workspace| {
+                format!("{}\t{}", workspace.name, format_path(&workspace.path))
+            })
+            .collect::<Vec<_>>();
+        pick_indices(
+            runner,
+            &labels,
+            "Remove workspaces (tab to toggle, enter to confirm)",
+        )?
+    } else {
+        let mut selected = Vec::new();
+        for name in names {
+            let index = workspaces
+                .iter()
+                .position(|workspace| workspace.name.as_str() == name)
+                .with_context(|| {
+                    format!(
+                        "no removable workspace named `{}`",
+                        terminal_text(name)
+                    )
+                })?;
+            if !selected.contains(&index) {
+                selected.push(index);
+            }
+        }
+        selected
+    };
     if selected.is_empty() {
         return Ok(());
     }
@@ -220,15 +240,18 @@ fn remove_workspaces(
         .map(|workspace| format_path(&workspace.path))
         .collect::<Vec<_>>()
         .join(", ");
-    if !confirm(&format!(
-        "Delete {} workspace(s) at {paths}{}?",
-        selected.len(),
-        if force {
-            " including untracked files"
-        } else {
-            ""
-        }
-    ))? {
+    // Naming workspaces is explicit; only confirm a picker selection.
+    if names.is_empty()
+        && !confirm(&format!(
+            "Delete {} workspace(s) at {paths}{}?",
+            selected.len(),
+            if force {
+                " including untracked files"
+            } else {
+                ""
+            }
+        ))?
+    {
         return Ok(());
     }
     let _lock = manager.lock_repository()?;
@@ -327,14 +350,15 @@ fn pr_command(
         );
     }
 
-    if let PrCommand::Cleanup { force, yes } = command {
+    if let PrCommand::Cleanup { force } = command {
+        // Naming the PR is explicit; only confirm an auto-detected one.
         return cleanup_pr(
             runner,
             jj,
             manager,
             number.context("missing PR number")?,
             force,
-            yes,
+            explicit.is_none(),
         );
     }
 
@@ -378,11 +402,11 @@ fn cleanup_pr(
     manager: &WorkspaceManager<'_>,
     number: u64,
     force: bool,
-    yes: bool,
+    needs_confirmation: bool,
 ) -> Result<()> {
     let workspace = manager.pr_workspace(number)?;
     if let Some(workspace) = &workspace
-        && !yes
+        && needs_confirmation
         && !confirm(&format!(
             "Delete PR workspace {} at {}{}?",
             workspace.name,
