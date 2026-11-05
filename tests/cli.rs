@@ -336,7 +336,7 @@ fn cleanup_can_remove_the_workspace_it_is_running_from() {
         }
 
         let output = run(Command::new(env!("CARGO_BIN_EXE_jjw"))
-            .args(["pr", "cleanup", "7", "--yes"])
+            .args(["pr", "cleanup", "7"])
             .current_dir(&workspace)
             .env("HOME", &home));
 
@@ -363,7 +363,56 @@ fn cleanup_can_remove_the_workspace_it_is_running_from() {
 }
 
 #[test]
-fn cleanup_requires_confirmation_before_deleting_untracked_data() {
+fn rm_removes_named_workspaces_without_prompting() {
+    let temp = TempDir::new();
+    let home = temp.0.join("home");
+    let repository = temp.0.join("repository");
+    fs::create_dir(&home).expect("create isolated home");
+    initialize_non_colocated_repository(&repository);
+    let [first, second] = ["first", "second"].map(|name| {
+        PathBuf::from(output_string(run(Command::new(env!(
+            "CARGO_BIN_EXE_jjw"
+        ))
+        .args(["create", name])
+        .current_dir(&repository)
+        .env("HOME", &home))))
+    });
+    let workspace_names = || {
+        output_string(run(Command::new("jj")
+            .arg("-R")
+            .arg(&repository)
+            .args(["workspace", "list", "-T", "name ++ \"\\n\""])))
+    };
+
+    // An unknown name aborts before any workspace is removed.
+    let output = Command::new(env!("CARGO_BIN_EXE_jjw"))
+        .args(["rm", "first", "missing"])
+        .current_dir(&repository)
+        .env("HOME", &home)
+        .output()
+        .expect("run jjw");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("no removable workspace named `missing`")
+    );
+    assert!(first.exists());
+
+    let output = run(Command::new(env!("CARGO_BIN_EXE_jjw"))
+        .args(["rm", "first"])
+        .current_dir(&repository)
+        .env("HOME", &home));
+
+    assert!(output.stdout.is_empty());
+    assert!(!first.exists());
+    assert!(second.exists());
+    let names = workspace_names();
+    assert!(!names.lines().any(|name| name == "first"));
+    assert!(names.lines().any(|name| name == "second"));
+}
+
+#[test]
+fn auto_detected_cleanup_requires_confirmation() {
     let temp = TempDir::new();
     let repository = temp.0.join("repository");
     let workspace = temp.0.join("pr-workspace");
@@ -377,18 +426,16 @@ fn cleanup_requires_confirmation_before_deleting_untracked_data() {
         .expect("write untracked data");
 
     let output = Command::new(env!("CARGO_BIN_EXE_jjw"))
-        .args(["pr", "cleanup", "7", "--force"])
-        .current_dir(&repository)
+        .args(["pr", "cleanup", "--force"])
+        .current_dir(&workspace)
         .output()
         .expect("run jjw");
 
     assert!(!output.status.success());
     assert!(workspace.join("untracked-data").exists());
-    assert!(
-        String::from_utf8(output.stderr)
-            .expect("jjw error is UTF-8")
-            .contains("confirmation requires an interactive terminal")
-    );
+    let stderr = String::from_utf8(output.stderr).expect("jjw error is UTF-8");
+    assert!(stderr.contains("Auto-detected PR #7"));
+    assert!(stderr.contains("confirmation requires an interactive terminal"));
 }
 
 #[test]
@@ -439,7 +486,7 @@ fn cleanup_does_not_require_a_github_origin() {
     ]));
 
     let output = run(Command::new(env!("CARGO_BIN_EXE_jjw"))
-        .args(["pr", "cleanup", "--force", "--yes"])
+        .args(["pr", "cleanup", "8", "--force"])
         .current_dir(&workspace)
         .env("HOME", &home));
 
@@ -453,7 +500,6 @@ fn cleanup_does_not_require_a_github_origin() {
     );
     assert!(!workspace.exists());
     let stderr = String::from_utf8(output.stderr).expect("jjw output is UTF-8");
-    assert!(stderr.contains("Auto-detected PR #8"));
     assert!(stderr.contains("Removed workspace:"));
     let cached_ref = Command::new("git")
         .arg("--git-dir")

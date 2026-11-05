@@ -58,7 +58,10 @@ require `--force`; other data under `.jj` and nested repositories still do.
 A subcommand is required; bare `jjw` prints usage.
 Diagnostics go to stderr.
 
-`pr cleanup` confirms before deletion; pass `--yes` for non-interactive use.
+Naming the target is the confirmation: `rm ws-1 ws-2` and `pr cleanup 7`
+delete without prompting. Bare `rm` picks workspaces with `fzf`, and `pr
+cleanup` inside a `pr-N` workspace auto-detects its PR; both confirm before
+deletion.
 Removal protects data present during its final quarantine scan; callers must
 stop concurrent writers before deleting a workspace.
 
